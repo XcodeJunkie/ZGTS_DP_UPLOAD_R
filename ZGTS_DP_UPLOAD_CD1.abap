@@ -88,8 +88,13 @@ CLASS gcl_file_local DEFINITION FINAL.
         IMPORTING is_dp_upload TYPE zgts_dp_upload.
 
   PRIVATE SECTION.
-    DATA: mv_base_dir TYPE string,
-          mv_path     TYPE string.
+    DATA: mv_base_dir TYPE string.
+
+    METHODS:
+      raise_when_matches
+        IMPORTING is_file               TYPE file_info
+                  iv_path               TYPE csequence
+        RETURNING VALUE(rv_has_matched) TYPE abap_bool.
 
 ENDCLASS.
 
@@ -126,7 +131,8 @@ CLASS gcl_file_server DEFINITION FINAL.
       BEGIN OF ts_path,
         path TYPE eps2filnam,
       END OF ts_path,
-      tt_paths TYPE STANDARD TABLE OF ts_path WITH DEFAULT KEY.
+      tt_paths   TYPE STANDARD TABLE OF ts_path WITH DEFAULT KEY,
+      tt_r_paths TYPE RANGE OF eps2filnam.
 
 
     DATA: mt_path     TYPE STANDARD TABLE OF string,
@@ -134,21 +140,13 @@ CLASS gcl_file_server DEFINITION FINAL.
 
     METHODS:
       scan_directory
-        CHANGING ct_paths TYPE tt_paths
-                 ct_files TYPE tt_files,
-
-      read_text_file
-        IMPORTING iv_file_path    TYPE /sapsll/path_local_appserver
-        EXPORTING et_file_content TYPE tt_lines
-                  ev_file_length  TYPE i,
-
-      write_text_file
-        IMPORTING iv_file_path    TYPE /sapsll/path_local_appserver
-                  it_file_content TYPE tt_lines
-        EXPORTING ev_file_length  TYPE i,
+        IMPORTING it_exclude_paths TYPE tt_r_paths OPTIONAL
+        CHANGING  ct_paths         TYPE tt_paths
+                  ct_files         TYPE tt_files,
 
       raise_when_matches
-        IMPORTING is_file TYPE ts_file.
+        IMPORTING is_file               TYPE ts_file
+        RETURNING VALUE(rv_has_matched) TYPE abap_bool.
 
 ENDCLASS.
 
@@ -165,7 +163,11 @@ CLASS gcl_email_handler DEFINITION FINAL.
 
   PRIVATE SECTION.
     DATA: mr_mail_request TYPE REF TO cl_bcs,
-          mt_mail_body    TYPE soli_tab.
+          mt_files        TYPE STANDARD TABLE OF tline WITH DEFAULT KEY.
+
+    METHODS:
+      build_body_html
+        RETURNING VALUE(rt_email) TYPE soli_tab.
 
 ENDCLASS.
 
@@ -235,100 +237,3 @@ CLASS gcl_xml_measures_upl DEFINITION FINAL INHERITING FROM gcl_content_abstr.
     METHODS:
       on_file_found REDEFINITION.
 ENDCLASS.
-
-
-
-
-*
-*CLASS gcl_type_abstr DEFINITION ABSTRACT.
-*  PUBLIC SECTION.
-*    INTERFACES: gif_message_sender.
-*
-*    METHODS:
-*      constructor
-*        IMPORTING iv_data_provider TYPE /sapsll/bpdpv
-*                  ir_mode          TYPE REF TO gif_mode
-*                  iv_program       TYPE program,
-*
-*      on_file_found FOR EVENT file_found OF gif_filehandler
-*        IMPORTING
-*          sender
-*          ev_file
-*          ev_full
-*          ev_path.
-*
-*  PROTECTED SECTION.
-*    DATA: mv_data_provider TYPE /sapsll/bpdpv,
-*          mr_mode          TYPE REF TO gif_mode,
-*          mv_program       TYPE program.
-*
-*ENDCLASS.
-*
-*
-*CLASS gcl_tariff DEFINITION INHERITING FROM gcl_type_abstr FINAL.
-*  PUBLIC SECTION.
-*    METHODS:
-*      constructor
-*        IMPORTING ir_mode          TYPE REF TO gif_mode
-*                  iv_data_provider TYPE /sapsll/bpdpv
-*                  iv_stccs         TYPE /sapsll/stccs
-*                  it_spras         TYPE /sapsll/spras_r_t,
-*
-*      on_file_found REDEFINITION.
-*
-*  PRIVATE SECTION.
-*    DATA:
-*      mv_stccs TYPE /sapsll/stccs,
-*      mv_prog  TYPE program,
-*      mt_spras TYPE /sapsll/spras_r_t.
-*
-*ENDCLASS.
-*
-*
-*CLASS gcl_control_class DEFINITION INHERITING FROM gcl_type_abstr FINAL.
-*  PUBLIC SECTION.
-*    METHODS:
-*      constructor
-*        IMPORTING ir_mode          TYPE REF TO gif_mode
-*                  iv_data_provider TYPE /sapsll/bpdpv
-*                  iv_stccs         TYPE /sapsll/stccs
-*                  it_spras         TYPE /sapsll/spras_r_t.
-*ENDCLASS.
-*
-*
-*CLASS gcl_spl DEFINITION FINAL INHERITING FROM gcl_type_abstr.
-*  PUBLIC SECTION.
-*    METHODS:
-*      constructor
-*        IMPORTING ir_mode          TYPE REF TO gif_mode
-*                  iv_data_provider TYPE /sapsll/bpdpv
-*                  iv_lgreg         TYPE /sapsll/lgreg_n
-*                  it_ltype         TYPE /sapsll/spcat_r_t
-*                  it_spgrp         TYPE /sapsll/spgrp_r_t,
-*
-*      on_file_found REDEFINITION.
-*
-*  PRIVATE SECTION.
-*    DATA:
-*      mt_ltype TYPE /sapsll/spcat_r_t,
-*      mt_spgrp TYPE /sapsll/spgrp_r_t,
-*      mv_lgreg TYPE /sapsll/lgreg_n.
-*
-*ENDCLASS.
-*
-*
-*CLASS gcl_measures DEFINITION FINAL INHERITING FROM gcl_type_abstr.
-*  PUBLIC SECTION.
-*    METHODS:
-*      constructor
-*        IMPORTING ir_mode          TYPE REF TO gif_mode
-*                  iv_data_provider TYPE /sapsll/bpdpv
-*                  iv_stcsm         TYPE /sapsll/stcsm,
-*
-*      on_file_found REDEFINITION.
-*
-*  PRIVATE SECTION.
-*    DATA:
-*      mv_stcsm TYPE /sapsll/stcsm.
-*
-*ENDCLASS.
