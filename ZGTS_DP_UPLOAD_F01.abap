@@ -6,25 +6,26 @@
 *&---------------------------------------------------------------------*
 *& Form sel_screen_output
 *&---------------------------------------------------------------------*
-*& text
-*&---------------------------------------------------------------------*
-*& -->  p1        text
-*& <--  p2        text
+*& Modify selection screen according to selected content type.
 *&---------------------------------------------------------------------*
 FORM sel_screen_output.
   CONSTANTS:
     BEGIN OF lc_modif_id,
-      local_file  TYPE char3 VALUE 'LOC',
-      server_file TYPE char3 VALUE 'SRV',
-      datab       TYPE char3 VALUE 'DAT',
-      stccs1      TYPE char3 VALUE 'CS1',
-      stccs2      TYPE char3 VALUE 'CS2',
-      stcts       TYPE char3 VALUE 'CTS',
-      ctsty       TYPE char3 VALUE 'CTY',
-      langu       TYPE char3 VALUE 'SPR',
-      legal_reg   TYPE char3 VALUE 'LGR',
-      spl_type    TYPE char3 VALUE 'TYP',
-      spl_group   TYPE char3 VALUE 'GRP',
+      local_file   TYPE char3 VALUE 'LOC',
+      server_file  TYPE char3 VALUE 'SRV',
+      datab        TYPE char3 VALUE 'DAT',
+      stccs1       TYPE char3 VALUE 'CS1',
+      stccs2       TYPE char3 VALUE 'CS2',
+      stccs3       TYPE char3 VALUE 'CS3',
+      stcts        TYPE char3 VALUE 'CTS',
+      ctsty        TYPE char3 VALUE 'CTY',
+      langu        TYPE char3 VALUE 'SPR',
+      legal_reg    TYPE char3 VALUE 'LGR',
+      spl_type     TYPE char3 VALUE 'TYP',
+      spl_group    TYPE char3 VALUE 'GRP',
+      spl_enhanced TYPE char3 VALUE 'ENH',
+      spl_ignore   TYPE char3 VALUE 'IGN',
+      spl_delete   TYPE char3 VALUE 'DEL',
     END OF lc_modif_id.
 
   " Default Legal regulation for SPL
@@ -49,15 +50,15 @@ FORM sel_screen_output.
 *
     " Set field visibility
     ls_screen-active = SWITCH #( ls_screen-group1
+" Tariff Codes UK, US
       WHEN lc_modif_id-stccs1 THEN SWITCH #( p_cont
         WHEN gif_const=>gc_content-taruk THEN 1
         WHEN gif_const=>gc_content-tarus THEN 1
         ELSE 0 )
       WHEN lc_modif_id-stccs2 THEN SWITCH #( p_cont
-        WHEN gif_const=>gc_content-alnde THEN 1
-        WHEN gif_const=>gc_content-duaeu THEN 1
-        WHEN gif_const=>gc_content-cclus THEN 1
+        WHEN gif_const=>gc_content-tareu THEN 1
         ELSE 0 )
+" Retariff Codes
       WHEN lc_modif_id-stcts THEN SWITCH #( p_cont
         WHEN gif_const=>gc_content-reteu THEN 1
         WHEN gif_const=>gc_content-retuk THEN 1
@@ -70,11 +71,18 @@ FORM sel_screen_output.
         WHEN gif_const=>gc_content-reteu THEN 1
         WHEN gif_const=>gc_content-retuk THEN 1
         ELSE 0 )
+" Classification
+      WHEN lc_modif_id-stccs3 THEN SWITCH #( p_cont
+        WHEN gif_const=>gc_content-alnde THEN 1
+        WHEN gif_const=>gc_content-duaeu THEN 1
+        WHEN gif_const=>gc_content-cclus THEN 1
+        ELSE 0 )
       WHEN lc_modif_id-langu THEN SWITCH #( p_cont
         WHEN gif_const=>gc_content-alnde THEN 1
         WHEN gif_const=>gc_content-duaeu THEN 1
         WHEN gif_const=>gc_content-cclus THEN 1
         ELSE 0 )
+" SPL Settings
       WHEN lc_modif_id-legal_reg THEN SWITCH #( p_cont
         WHEN gif_const=>gc_content-splde THEN 1
         WHEN gif_const=>gc_content-splus THEN 1
@@ -87,6 +95,19 @@ FORM sel_screen_output.
         WHEN gif_const=>gc_content-splde THEN 1
         WHEN gif_const=>gc_content-splus THEN 1
         ELSE 0 )
+      WHEN lc_modif_id-spl_enhanced THEN SWITCH #( p_cont
+        WHEN gif_const=>gc_content-splde THEN 1
+        WHEN gif_const=>gc_content-splus THEN 1
+        ELSE 0 )
+      WHEN lc_modif_id-spl_ignore THEN SWITCH #( p_cont
+        WHEN gif_const=>gc_content-splde THEN 1
+        WHEN gif_const=>gc_content-splus THEN 1
+        ELSE 0 )
+      WHEN lc_modif_id-spl_delete THEN SWITCH #( p_cont
+        WHEN gif_const=>gc_content-splde THEN 1
+        WHEN gif_const=>gc_content-splus THEN 1
+        ELSE 0 )
+" File Input
       WHEN lc_modif_id-local_file THEN SWITCH #( px_loc
         WHEN abap_true THEN 1
         ELSE 0 )
@@ -120,15 +141,13 @@ FORM sel_screen_output.
     ).
     MODIFY SCREEN FROM ls_screen.
   ENDLOOP.
+
 ENDFORM.
 
 *&---------------------------------------------------------------------*
 *& Form start
 *&---------------------------------------------------------------------*
-*& text
-*&---------------------------------------------------------------------*
-*& -->  p1        text
-*& <--  p2        text
+*& Main start routine
 *&---------------------------------------------------------------------*
 FORM start.
 
@@ -151,6 +170,8 @@ FORM start.
       invalid_call = 2
       OTHERS       = 3.
   IF sy-subrc <> 0.
+    " Customizing zum &1 Upload unvollständig.
+    MESSAGE e009(zgts) WITH p_cont.
   ENDIF.
 
   " File handler
@@ -194,14 +215,13 @@ FORM start.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
-*& Form get_filename
+*& Form GET_FILENAME
 *&---------------------------------------------------------------------*
-*& text
+*& Open browser pop-up to select upload directory
 *&---------------------------------------------------------------------*
-*&      <-- P_FILE
+*&      <-- CV_PATH  Local file path
 *&---------------------------------------------------------------------*
-FORM get_filename USING iv_flag_local TYPE abap_bool
-               CHANGING cv_path       TYPE string.
+FORM get_filename CHANGING cv_path TYPE string.
 
   " Open browser pop-up to select upload directory
   CALL METHOD cl_gui_frontend_services=>directory_browse
@@ -223,10 +243,7 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *& Form GET_TEXTPOOL
 *&---------------------------------------------------------------------*
-*& text
-*&---------------------------------------------------------------------*
-*& -->  p1        text
-*& <--  p2        text
+*& Get textpool for human-readable error messages later.
 *&---------------------------------------------------------------------*
 FORM get_textpool.
   CALL FUNCTION 'RS_TEXTPOOL_READ'
@@ -247,19 +264,49 @@ FORM get_textpool.
     RETURN.
   ENDIF.
 
-  LOOP AT gt_textpool ASSIGNING FIELD-SYMBOL(<ls_textpool>) WHERE id = 'S'.
+  LOOP AT gt_textpool ASSIGNING FIELD-SYMBOL(<ls_textpool>) WHERE id = gif_const=>gc_kind-selopt.
     <ls_textpool>-entry = <ls_textpool>-entry+8.
   ENDLOOP.
 
 ENDFORM.
 
+FORM restrict_mail.
+
+  DATA(lt_restrict) = VALUE sscr_restrict(
+    opt_list_tab = VALUE sscr_opt_list_tab( (
+      name       = 'ONLY_EQ'
+      options-eq = abap_true
+    ) )
+    ass_tab      = VALUE sscr_ass_tab( (
+      kind    = gif_const=>gc_kind-selopt
+      name    = 'S_EMAIL'
+      sg_main = zif_gts_const=>gc_range-sign-inclusive
+      op_main = 'ONLY_EQ'
+    ) )
+  ).
+
+  CALL FUNCTION 'SELECT_OPTIONS_RESTRICT'
+    EXPORTING
+      restriction            = lt_restrict
+    EXCEPTIONS
+      too_late               = 1
+      repeated               = 2
+      selopt_without_options = 3
+      selopt_without_signs   = 4
+      invalid_sign           = 5
+      empty_option_list      = 6
+      invalid_kind           = 7
+      repeated_kind_a        = 8
+      OTHERS                 = 9.
+  IF sy-subrc <> 0.
+    RETURN.
+  ENDIF.
+ENDFORM.
+
 *&---------------------------------------------------------------------*
 *& Form SEL_SCREEN_OBLIGATORY_CHECK
 *&---------------------------------------------------------------------*
-*& text
-*&---------------------------------------------------------------------*
-*& -->  p1        text
-*& <--  p2        text
+*& Check for empty mandatory fields.
 *&---------------------------------------------------------------------*
 FORM sel_screen_obligatory_check .
   IF sscrfields-ucomm <> 'ONLI'.
@@ -278,4 +325,28 @@ FORM sel_screen_obligatory_check .
       ENDIF.
     ENDIF.
   ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Form GET_PARTNER_DETAILS
+*&---------------------------------------------------------------------*
+*& Get partner name for selected data provider
+*&---------------------------------------------------------------------*
+*&      --> IV_PARTNER  Data provider number
+*&      <-- CV_DP_NAME  Partner name
+*&---------------------------------------------------------------------*
+FORM get_partner_details USING iv_partner TYPE /sapsll/bpdpv
+                      CHANGING cv_dp_name TYPE csequence.
+
+  " Initialization
+  CLEAR cv_dp_name.
+
+  " Select name from but000
+  SELECT SINGLE name_org1
+           FROM but000
+           INTO cv_dp_name
+          WHERE partner = iv_partner.
+  IF sy-subrc <> 0.
+    CLEAR cv_dp_name.
+  ENDIF.
 ENDFORM.
