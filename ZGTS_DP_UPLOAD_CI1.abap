@@ -16,6 +16,17 @@ CLASS gcl_file_local IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD gif_filehandler~move_file_to_archive.
+
+    IF p_arch = abap_false.
+      RETURN.
+    ENDIF.
+
+    WRITE:/ |File { iv_file } has been archived.|.
+
+    IF px_simu = abap_true.
+      RETURN.
+    ENDIF.
+
   ENDMETHOD.
 
   METHOD gif_filehandler~start_upload.
@@ -45,18 +56,64 @@ CLASS gcl_file_local IMPLEMENTATION.
       RETURN.
     ENDIF.
 
-    MESSAGE i024(cbc_common) WITH mv_path INTO DATA(lv_dummy).
+    MESSAGE i024(cbc_common) WITH iv_path INTO DATA(lv_dummy).
     RAISE EVENT gif_message_sender~message_occured.
 
+    SORT lt_files BY filename   ASCENDING
+                     createdate ASCENDING
+                     createtime ASCENDING.
+
     " Process all files and trigger upload for each
-    LOOP AT lt_files INTO DATA(ls_file).
-      RAISE EVENT gif_filehandler~file_found
-        EXPORTING
-          ev_file = ls_file-filename
-          ev_path = mv_path
-          ev_full = |{ iv_path }{ gif_filehandler~mv_path_sep }{ ls_file-filename }|.
-    ENDLOOP.
+    CASE gif_filehandler~ms_dp_upload-procs.
+      WHEN gif_const=>gc_procs-newest.
+        DATA(ls_file_process) = REDUCE file_info(
+            INIT s_file = VALUE file_info( )
+            FOR <s_file> IN lt_files
+            NEXT s_file = COND #( LET  v_ver_curr = substring_from( val  = <s_file>-filename pcre = gif_const=>pcre_delimiter )
+                                       v_ver_high = substring_from( val  = s_file-filename   pcre = gif_const=>pcre_delimiter ) IN
+                                  WHEN v_ver_curr > v_ver_high THEN <s_file>
+                                  ELSE s_file ) ).
+        IF raise_when_matches(
+          is_file = ls_file_process
+          iv_path = iv_path ) = abap_true.
+
+          LOOP AT lt_files INTO DATA(ls_file).
+            gif_filehandler~move_file_to_archive(
+              iv_file = ls_file-filename
+              iv_full = |{ iv_path }{ gif_filehandler~mv_path_sep }{ ls_file-filename }| ).
+          ENDLOOP.
+        ENDIF.
+
+      WHEN OTHERS.
+        " Take all files
+        LOOP AT lt_files INTO ls_file.
+          IF raise_when_matches(
+            is_file = ls_file
+            iv_path = iv_path ) = abap_true.
+
+            gif_filehandler~move_file_to_archive(
+              iv_file = ls_file-filename
+              iv_full = |{ iv_path }{ gif_filehandler~mv_path_sep }{ ls_file-filename }| ).
+          ENDIF.
+        ENDLOOP.
+    ENDCASE.
+
   ENDMETHOD.
+
+  METHOD raise_when_matches.
+    rv_has_matched = abap_false.
+
+    IF matches( val  = is_file-filename
+                pcre = gif_filehandler~ms_dp_upload-regex ).
+      rv_has_matched = abap_true.
+
+      RAISE EVENT gif_filehandler~file_found
+        EXPORTING ev_file = is_file-filename
+                  ev_full = |{ iv_path }{ gif_filehandler~mv_path_sep }{ is_file-filename }|
+                  ev_path = iv_path.
+    ENDIF.
+  ENDMETHOD.
+
 ENDCLASS.
 
 
@@ -77,37 +134,58 @@ CLASS gcl_file_server IMPLEMENTATION.
 
     DATA: lt_files TYPE tt_files.
 
+    " Construct scan paths
     DATA(lt_paths) = VALUE tt_paths( ( path = iv_path ) ).
+
+    " Construct exclude paths
+    DATA(lt_exclude_paths) = VALUE tt_r_paths( (
+      sign   = zif_gts_const=>gc_range-sign-inclusive
+      option = zif_gts_const=>gc_range-option-equal
+      low    = gif_const=>gc_path-archive
+    ) ).
+
     DO.
       IF lines( lt_paths ) = 0.
         EXIT.
       ENDIF.
 
       scan_directory(
-        CHANGING ct_paths = lt_paths
-                 ct_files = lt_files ).
+        EXPORTING it_exclude_paths = lt_exclude_paths
+         CHANGING ct_paths         = lt_paths
+                   ct_files        = lt_files ).
     ENDDO.
 
-    SORT lt_files BY path ASCENDING.
+    SORT lt_files BY path ASCENDING
+                     name ASCENDING.
 
     LOOP AT lt_files INTO DATA(ls_file)
                       GROUP BY ( content = ls_file-content )
            REFERENCE INTO DATA(lr_file_grp).
       CASE gif_filehandler~ms_dp_upload-procs.
         WHEN gif_const=>gc_procs-newest.
-          ls_file = REDUCE ts_file(
+          DATA(ls_file_process) = REDUCE ts_file(
               INIT s_file = VALUE ts_file( )
               FOR <s_file> IN GROUP lr_file_grp
               NEXT s_file = COND #( LET  v_ver_curr = substring_from( val  = <s_file>-name pcre = gif_const=>pcre_delimiter )
                                          v_ver_high = substring_from( val  = s_file-name   pcre = gif_const=>pcre_delimiter ) IN
                                     WHEN v_ver_curr > v_ver_high THEN <s_file>
                                     ELSE s_file ) ).
-          raise_when_matches( ls_file ).
+          IF raise_when_matches( ls_file_process ) = abap_true.
+            LOOP AT GROUP lr_file_grp INTO ls_file.
+              gif_filehandler~move_file_to_archive(
+                iv_file = ls_file-name
+                iv_full = ls_file-full ).
+            ENDLOOP.
+          ENDIF.
 
         WHEN OTHERS.
           " Take all files
           LOOP AT GROUP lr_file_grp INTO ls_file.
-            raise_when_matches( ls_file ).
+            IF raise_when_matches( ls_file ) = abap_true.
+              gif_filehandler~move_file_to_archive(
+                iv_file = ls_file-name
+                iv_full = ls_file-full ).
+            ENDIF.
           ENDLOOP.
       ENDCASE.
     ENDLOOP.
@@ -117,8 +195,12 @@ CLASS gcl_file_server IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD raise_when_matches.
+    rv_has_matched = abap_false.
+
     IF matches( val  = is_file-name
                 pcre = gif_filehandler~ms_dp_upload-regex ).
+      rv_has_matched = abap_true.
+
       RAISE EVENT gif_filehandler~file_found
         EXPORTING ev_file = is_file-name
                   ev_full = is_file-full
@@ -126,60 +208,33 @@ CLASS gcl_file_server IMPLEMENTATION.
     ENDIF.
   ENDMETHOD.
 
-  METHOD read_text_file.
-
-    DATA: ls_line        TYPE LINE OF tt_lines,
-          lv_line_length TYPE i,
-          lv_file_length TYPE i.
-
-    CLEAR: et_file_content,
-           ev_file_length.
-
-    OPEN DATASET iv_file_path FOR INPUT IN TEXT MODE ENCODING DEFAULT.
-    IF sy-subrc <> 0.
-      RETURN.
-    ENDIF.
-
-    DO.
-      CLEAR: ls_line,
-             lv_line_length.
-
-      READ DATASET iv_file_path INTO ls_line LENGTH lv_line_length.
-      IF sy-subrc = 0.
-        APPEND ls_line TO et_file_content.
-        ADD lv_line_length TO ev_file_length.
-
-      ELSEIF sy-subrc = 8.
-        EXIT.
-
-      ELSE.
-        APPEND ls_line TO et_file_content.
-        ADD lv_line_length TO ev_file_length.
-        EXIT.
-
-      ENDIF.
-    ENDDO.
-
-    CLOSE DATASET iv_file_path.
-
-  ENDMETHOD.
-
   METHOD gif_filehandler~move_file_to_archive.
 
     TYPES: tt_path TYPE STANDARD TABLE OF /sapsll/path_local_appserver WITH EMPTY KEY.
 
-    DATA: lt_file_content  TYPE tt_lines,
-          lv_target        TYPE /sapsll/path_local_appserver,
-          lv_source_length TYPE i,
-          lv_target_length TYPE i.
+    DATA: lv_target TYPE /sapsll/path_local_appserver,
+          ls_line   TYPE LINE OF tt_lines.
 
-    " 1. Copy file
-    read_text_file(
-      EXPORTING iv_file_path    = iv_full
-      IMPORTING et_file_content = lt_file_content
-                ev_file_length  = lv_source_length ).
+    IF p_arch = abap_false.
+      RETURN.
+    ENDIF.
 
+    WRITE:/ |File { iv_file } has been archived.|.
 
+    IF px_simu = abap_true.
+      RETURN.
+    ENDIF.
+
+    " Just to be sure
+    CLOSE DATASET iv_full.
+
+    " Open source file for read
+    OPEN DATASET iv_full FOR INPUT IN TEXT MODE ENCODING DEFAULT.
+    IF sy-subrc <> 0.
+      RETURN.
+    ENDIF.
+
+    " Construct target archive path
     DATA(lt_path) = VALUE tt_path( ( gif_const=>gc_path-main )
                                    ( gif_const=>gc_path-archive )
                                    ( iv_file ) ).
@@ -187,38 +242,34 @@ CLASS gcl_file_server IMPLEMENTATION.
     lv_target = gif_filehandler~mv_path_sep && concat_lines_of( table = lt_path
                                                                 sep   = gif_filehandler~mv_path_sep ).
 
-    write_text_file(
-      EXPORTING iv_file_path    = lv_target
-                it_file_content = lt_file_content
-      IMPORTING ev_file_length  = lv_target_length ).
-
-    IF lv_source_length = lv_target_length.
-      " 2. Delete source file
-      DELETE DATASET iv_full.
-
-    ELSE.
-      DELETE DATASET lv_target.
-
-    ENDIF.
-
-  ENDMETHOD.
-
-  METHOD write_text_file.
-    CLEAR: ev_file_length.
-
-    OPEN DATASET iv_file_path FOR OUTPUT IN TEXT MODE ENCODING DEFAULT.
+    " Open target file for write
+    CLOSE DATASET lv_target.
+    OPEN DATASET lv_target FOR OUTPUT IN TEXT MODE ENCODING DEFAULT.
     IF sy-subrc <> 0.
+      CLOSE DATASET iv_full.
       RETURN.
     ENDIF.
 
-    LOOP AT it_file_content INTO DATA(ls_line).
-      TRANSFER ls_line TO iv_file_path.
-    ENDLOOP.
-    CLOSE DATASET iv_file_path.
+    DO.
+      CLEAR: ls_line.
+      READ DATASET iv_full INTO ls_line.
+      IF sy-subrc = 0.
+        TRANSFER ls_line TO lv_target.
 
-    read_text_file(
-      EXPORTING iv_file_path    = iv_file_path
-      IMPORTING ev_file_length  = ev_file_length ).
+      ELSEIF sy-subrc = 8.
+        EXIT.
+
+      ELSE.
+        TRANSFER ls_line TO lv_target.
+        EXIT.
+
+      ENDIF.
+    ENDDO.
+
+    CLOSE DATASET iv_full.
+    CLOSE DATASET lv_target.
+
+    DELETE DATASET iv_full.
 
   ENDMETHOD.
 
@@ -283,7 +334,8 @@ CLASS gcl_file_server IMPLEMENTATION.
           " Directory
         ELSEIF ( ls_file-type(1) = 'd' OR
                  ls_file-type(1) = 'D' ) AND NOT matches( val  = ls_file-name
-                                                          pcre = '^\.+').
+                                                          pcre = '^\.+')
+                                         AND NOT ls_file-name IN it_exclude_paths.
           APPEND lv_path && gif_filehandler~mv_path_sep && ls_file-name TO ct_paths.
 
         ENDIF.
@@ -308,44 +360,50 @@ ENDCLASS.
 
 CLASS gcl_email_handler IMPLEMENTATION.
   METHOD constructor.
-    TRY.
-        mr_mail_request = cl_bcs=>create_persistent( ).
-
-        " This could be done better with SO10 texts, but no time...
-        APPEND TEXT-001 TO mt_mail_body.
-        APPEND TEXT-002 && px_simu TO mt_mail_body.
-        APPEND TEXT-003 TO mt_mail_body.
-
-      CATCH cx_send_req_bcs.
-        CLEAR mr_mail_request.
-
-    ENDTRY.
+    CLEAR mt_files.
   ENDMETHOD.
 
   METHOD on_file_found.
-    APPEND ev_file TO mt_mail_body.
+    APPEND VALUE tline(
+      tdformat = 'B1'
+      tdline   = ev_file
+    ) TO mt_files.
   ENDMETHOD.
 
   METHOD on_upload_finished.
+    " Send only email when flag is set
+    IF px_email = abap_false.
+      RETURN.
+    ENDIF.
+
     " Mail shall only be sent, when email recipients are maintained
     IF s_email[] IS INITIAL.
       RETURN.
     ENDIF.
 
-    " Mail subject
-    DATA(lv_mail_subject) = CONV so_obj_des( TEXT-001 ).
-
-    " Upload beendet.
-    APPEND TEXT-999 TO mt_mail_body.
+    " No email when no file has been uploaded
+    IF mt_files IS INITIAL.
+      RETURN.
+    ENDIF.
 
     TRY.
-        " Mail document
+        mr_mail_request = cl_bcs=>create_persistent( ).
+
+        " Build E-Mail body as HTML text
+        DATA(lt_mail_body) = build_body_html( ).
+
+        " Mail subject
+        DATA(lv_mail_subject) = CONV so_obj_des( TEXT-001 ).
+
         DATA(lr_document) = cl_document_bcs=>create_document(
-          i_type    = 'RAW'
-          i_text    = mt_mail_body
+          i_type    = 'HTM'
+          i_text    = lt_mail_body
           i_subject = lv_mail_subject ).
 
         mr_mail_request->set_document( lr_document ).
+
+        DATA(lr_sender) = cl_cam_address_bcs=>create_internet_address( i_address_string = 'do-not-reply@eos.info' ).
+        mr_mail_request->set_sender( lr_sender ).
 
         " Mail recipient
         LOOP AT s_email INTO DATA(ls_email).
@@ -369,7 +427,109 @@ CLASS gcl_email_handler IMPLEMENTATION.
             cx_address_bcs
             cx_send_req_bcs.
 
+        " Email konnte nicht versendet werden
+        MESSAGE s113(/sapsll/con_lmgm) DISPLAY LIKE 'E'.
+
     ENDTRY.
+  ENDMETHOD.
+
+  METHOD build_body_html.
+
+    " Local declarations
+    DATA: ls_thead     TYPE thead,
+          lt_mail_itf  TYPE STANDARD TABLE OF tline WITH EMPTY KEY,
+          lt_mail_html TYPE STANDARD TABLE OF htmlline WITH EMPTY KEY.
+
+    " Initialization
+    CLEAR: rt_email,
+           ls_thead,
+           lt_mail_itf,
+           lt_mail_html.
+
+    TRY.
+        " Get SO10 Mail text
+        CALL FUNCTION 'READ_TEXT'
+          EXPORTING
+            client                  = sy-mandt
+            language                = sy-langu
+            id                      = 'ST'
+            object                  = 'TEXT'
+            name                    = 'Z_REGUVIS_UPLOAD_MAIL'
+          IMPORTING
+            header                  = ls_thead
+          TABLES
+            lines                   = lt_mail_itf
+          EXCEPTIONS
+            id                      = 1
+            language                = 2
+            name                    = 3
+            not_found               = 4
+            object                  = 5
+            reference_check         = 6
+            wrong_access_to_archive = 7
+            OTHERS                  = 8.
+        IF sy-subrc <> 0.
+          RAISE EXCEPTION TYPE zcx_gts_check.
+        ENDIF.
+
+        " Replace run mode variable in mail text
+        DATA(lv_mode) = SWITCH string( px_simu WHEN abap_true THEN TEXT-sim ELSE TEXT-pro ).
+        CALL FUNCTION 'TEXT_SYMBOL_SETVALUE'
+          EXPORTING
+            name  = 'LV_MODE'
+            value = lv_mode.
+
+        " Replace system id variable in mail text
+        CALL FUNCTION 'TEXT_SYMBOL_SETVALUE'
+          EXPORTING
+            name  = 'LV_SYSID'
+            value = sy-sysid.
+
+        " Replace content variable in mail text
+        CALL FUNCTION 'TEXT_SYMBOL_SETVALUE'
+          EXPORTING
+            name  = 'LV_CONTENT'
+            value = p_cont.
+
+        " Perform variable substitution
+        CALL FUNCTION 'TEXT_SYMBOL_REPLACE'
+          EXPORTING
+            header       = ls_thead
+            replace_text = abap_true
+          TABLES
+            lines        = lt_mail_itf.
+
+        " Add file names
+        APPEND LINES OF mt_files TO lt_mail_itf.
+
+        " Convert SAPScript to HTML
+        CALL FUNCTION 'CONVERT_ITF_TO_HTML'
+          EXPORTING
+            i_header       = ls_thead
+          TABLES
+            t_itf_text     = lt_mail_itf
+            t_html_text    = lt_mail_html
+          EXCEPTIONS
+            syntax_check   = 1
+            replace        = 2
+            illegal_header = 3
+            OTHERS         = 4.
+        IF sy-subrc <> 0.
+          RAISE EXCEPTION TYPE zcx_gts_check.
+        ENDIF.
+
+        " Get HTML as simple string
+        DATA(lv_string) = REDUCE string( INIT v_str = ``
+                                         FOR  s_row IN lt_mail_html
+                                         NEXT v_str = |{ v_str }{ s_row-tdline }| ).
+      CATCH zcx_gts_check.
+        lv_string = '<html>'.
+
+    ENDTRY.
+
+    " Convert string to SOLI_TAB
+    rt_email = cl_document_bcs=>string_to_soli( lv_string ).
+
   ENDMETHOD.
 ENDCLASS.
 
@@ -380,11 +540,6 @@ CLASS gcl_content_abstr IMPLEMENTATION.
 
     IF px_simu = abap_false.
       SUBMIT (iv_program) WITH SELECTION-TABLE it_params AND RETURN.
-
-      ir_sender->move_file_to_archive(
-        iv_file = iv_file
-        iv_full = iv_full ).
-
     ENDIF.
   ENDMETHOD.
 ENDCLASS.
@@ -396,7 +551,7 @@ CLASS gcl_num_upload_002 IMPLEMENTATION.
 
     DATA(lt_params) = VALUE btc_t_templ_var(
       ( selname = 'P_BP'     kind = gif_const=>gc_kind-params low = p_dp )
-      ( selname = 'P_STCCS'  kind = gif_const=>gc_kind-params low = p_stcc2 )
+      ( selname = 'P_STCCS'  kind = gif_const=>gc_kind-params low = p_stcc3 )
       ( selname = 'P_PATH'   kind = gif_const=>gc_kind-params low = SWITCH #( lv_local_file WHEN abap_true THEN ev_full ELSE space ) )
       ( selname = 'P_PATH2'  kind = gif_const=>gc_kind-params low = SWITCH #( lv_local_file WHEN abap_false THEN ev_full ELSE space ) )
       ( selname = 'P_PCKGC'  kind = gif_const=>gc_kind-params low = abap_true )
@@ -428,7 +583,7 @@ CLASS gcl_num_upload_101 IMPLEMENTATION.
 
     DATA(lt_params) = VALUE btc_t_templ_var(
       ( selname = 'P_BP'     kind = gif_const=>gc_kind-params low = p_dp )
-      ( selname = 'P_STCCS'  kind = gif_const=>gc_kind-params low = p_stccs )
+      ( selname = 'P_STCCS'  kind = gif_const=>gc_kind-params low = p_stcc1 )
       ( selname = 'P_PATH'   kind = gif_const=>gc_kind-params low = SWITCH #( lv_local_file WHEN abap_true THEN ev_full ELSE space ) )
       ( selname = 'P_PATH2'  kind = gif_const=>gc_kind-params low = SWITCH #( lv_local_file WHEN abap_false THEN ev_full ELSE space ) )
       ( selname = 'P_PCKGC'  kind = gif_const=>gc_kind-params low = abap_true )
@@ -502,12 +657,15 @@ CLASS gcl_spl_upload_ixml IMPLEMENTATION.
     DATA(lv_local_file) = sender->is_local( ).
 
     DATA(lt_params) = VALUE btc_t_templ_var(
-      ( selname = 'P_PROVI' kind = gif_const=>gc_kind-params low = p_dp )
-      ( selname = 'P_LGREG' kind = gif_const=>gc_kind-params low = p_lgreg )
-      ( selname = 'P_PATH'  kind = gif_const=>gc_kind-params low = SWITCH #( lv_local_file WHEN abap_true  THEN ev_full ELSE space ) )
-      ( selname = 'P_PATH2' kind = gif_const=>gc_kind-params low = SWITCH #( lv_local_file WHEN abap_false THEN ev_full ELSE space ) )
-      ( selname = 'P_APPLS' kind = gif_const=>gc_kind-params low = abap_true )
-      ( selname = 'P_SFILE' kind = gif_const=>gc_kind-params low = abap_true )
+      ( selname = 'P_PROVI'  kind = gif_const=>gc_kind-params low = p_dp )
+      ( selname = 'P_LGREG'  kind = gif_const=>gc_kind-params low = p_lgreg )
+      ( selname = 'P_PATH'   kind = gif_const=>gc_kind-params low = SWITCH #( lv_local_file WHEN abap_true  THEN ev_full ELSE space ) )
+      ( selname = 'P_PATH2'  kind = gif_const=>gc_kind-params low = SWITCH #( lv_local_file WHEN abap_false THEN ev_full ELSE space ) )
+      ( selname = 'P_ENH'    kind = gif_const=>gc_kind-params low = p_enh )
+      ( selname = 'P_APPLS'  kind = gif_const=>gc_kind-params low = abap_true )
+      ( selname = 'P_SFILE'  kind = gif_const=>gc_kind-params low = abap_true )
+      ( selname = 'P_DELSUB' kind = gif_const=>gc_kind-params low = p_delsub )
+      ( selname = 'P_IGNORE' kind = gif_const=>gc_kind-params low = p_ignore )
     ).
     lt_params = VALUE #( BASE lt_params FOR ls_ltype IN s_ltype[] ( selname = 'S_LTYPE' kind = gif_const=>gc_kind-selopt
       sign   = ls_ltype-sign
@@ -558,201 +716,3 @@ CLASS gcl_xml_measures_upl IMPLEMENTATION.
     ).
   ENDMETHOD.
 ENDCLASS.
-
-
-
-*
-*
-*CLASS gcl_type_abstr IMPLEMENTATION.
-*  METHOD constructor.
-*    " Keep selection data
-*    mv_data_provider = iv_data_provider.
-*    mr_mode          = ir_mode.
-*    mv_program       = iv_program.
-*  ENDMETHOD.
-*
-*  METHOD on_file_found.
-*
-*    IF mr_mode->is_productive( ) = abap_true.
-*      " Move the yet processed file to archive folder
-*      TRY.
-*          DATA(lr_filehandler) = CAST gif_filehandler( sender ).
-*
-*          lr_filehandler->move_file_to_archive(
-*            iv_file = ev_file
-*            iv_path = ev_path
-*            iv_full = ev_full ).
-*
-*        CATCH cx_sy_assign_cast_error.
-*          " Should never occur
-*          CHECK 1 = 1.
-*
-*      ENDTRY.
-*    ENDIF.
-*
-*    WRITE:/ |Upload von Datei { ev_file }|.
-*
-*  ENDMETHOD.
-*ENDCLASS.
-*
-*
-*CLASS gcl_tariff IMPLEMENTATION.
-*  METHOD constructor.
-*    super->constructor(
-*      ir_mode          = ir_mode
-*      iv_data_provider = iv_data_provider
-*      iv_program       = '/SAPSLL/NSC_NUM_UPLOAD_102' ).
-*
-*    mv_prog   = iv_prog.
-*    mv_stccs  = iv_stccs.
-*    mt_spras  = it_spras.
-*    IF mv_stccs IS INITIAL.
-*      " Füllen Sie alle Mussfelder aus
-*      MESSAGE e055(00).
-*    ENDIF.
-*  ENDMETHOD.
-*
-*  METHOD on_file_found.
-*    DATA(lt_params) = VALUE btc_t_templ_var(
-*      ( selname = 'P_BP'     kind = gif_mode=>gc_kind-params low = mv_data_provider )
-*      ( selname = 'P_STCCS'  kind = gif_mode=>gc_kind-params low = mv_stccs )
-*      ( selname = 'P_PATH'   kind = gif_mode=>gc_kind-params low = SWITCH #( sender->is_local( )
-*                                                WHEN abap_true THEN ev_full ELSE space ) )
-*      ( selname = 'P_PATH2'  kind = gif_mode=>gc_kind-params low = SWITCH #( sender->is_local( )
-*                                                WHEN abap_false THEN ev_full ELSE space ) )
-*      ( selname = 'P_PCKGC'  kind = gif_mode=>gc_kind-params low = abap_true )
-*      ( selname = 'P_NSCUP'  kind = gif_mode=>gc_kind-params low = abap_true )
-*      ( selname = 'P_SIMUL'  kind = gif_mode=>gc_kind-params low = abap_false )
-*    ).
-*
-*    lt_params = VALUE #( BASE lt_params FOR ls_spras IN mt_spras ( selname = 'S_LANGU' kind = gif_mode=>gc_kind-selopt
-*      sign   = ls_spras-sign
-*      option = ls_spras-option
-*      low    = ls_spras-low
-*      high   = ls_spras-high ) ).
-*
-*    IF mr_mode->is_productive( ) = abap_true.
-*      " Submit the report for uploading a single tariff code file
-*      SUBMIT (mv_prog) WITH SELECTION-TABLE lt_params AND RETURN.
-*    ENDIF.
-*
-*    " Move file to archive and output log message
-*    super->on_file_found(
-*      sender  = sender
-*      ev_file = ev_file
-*      ev_path = ev_path
-*      ev_full = ev_full ).
-*
-*  ENDMETHOD.
-*ENDCLASS.
-*
-*
-*CLASS gcl_control_class IMPLEMENTATION.
-*  METHOD constructor.
-*    super->constructor(
-*      ir_mode          = ir_mode
-*      iv_data_provider = iv_data_provider
-*      iv_stccs         = iv_stccs
-*      it_spras         = it_spras
-*      iv_program       = '/SAPSLL/NSC_NUM_UPLOAD_002' ).
-*  ENDMETHOD.
-*ENDCLASS.
-*
-*
-*CLASS gcl_spl IMPLEMENTATION.
-*  METHOD constructor.
-*    super->constructor(
-*      ir_mode          = ir_mode
-*      iv_data_provider = iv_data_provider ).
-*
-*    mt_ltype = it_ltype.
-*    mt_spgrp = it_spgrp.
-*    mv_lgreg = iv_lgreg.
-*
-*    IF mv_lgreg IS INITIAL.
-*      " Füllen Sie alle Mussfelder aus
-*      MESSAGE e055(00).
-*    ENDIF.
-*
-*  ENDMETHOD.
-*
-*  METHOD on_file_found.
-*
-*    DATA(lt_params) = VALUE btc_t_templ_var(
-*      ( selname = 'P_LGREG' kind = gif_mode=>gc_kind-params low = mv_lgreg )
-*      ( selname = 'P_PROVI' kind = gif_mode=>gc_kind-params low = mv_data_provider )
-*      ( selname = 'P_APPLS' kind = gif_mode=>gc_kind-params low = abap_true )
-*      ( selname = 'P_SFILE' kind = gif_mode=>gc_kind-params low = abap_true )
-*      ( selname = 'P_PATH'  kind = gif_mode=>gc_kind-params low = SWITCH #( sender->is_local( ) WHEN abap_true  THEN ev_full ELSE space ) )
-*      ( selname = 'P_PATH2' kind = gif_mode=>gc_kind-params low = SWITCH #( sender->is_local( ) WHEN abap_false THEN ev_full ELSE space ) )
-*    ).
-*
-*    lt_params = VALUE #( BASE lt_params FOR ls_ltype IN mt_ltype ( selname = 'S_LTYPE' kind = gif_mode=>gc_kind-selopt
-*      sign   = ls_ltype-sign
-*      option = ls_ltype-option
-*      low    = ls_ltype-low
-*      high   = ls_ltype-high ) ).
-*
-*    lt_params = VALUE #( BASE lt_params FOR ls_spgrp IN mt_spgrp ( selname = 'S_SPGRP' kind = gif_mode=>gc_kind-selopt
-*      sign   = ls_spgrp-sign
-*      option = ls_spgrp-option
-*      low    = ls_spgrp-low
-*      high   = ls_spgrp-high ) ).
-*
-*    IF mr_mode->is_productive( ) = abap_true.
-*      " Submit the report for uploading a single spl file
-*      SUBMIT /sapsll/spl_upload_ixml WITH SELECTION-TABLE lt_params AND RETURN.
-*    ENDIF.
-*
-*    " Move file to archive and output log message
-*    super->on_file_found(
-*      sender  = sender
-*      ev_file = ev_file
-*      ev_path = ev_path
-*      ev_full = ev_full ).
-*
-*  ENDMETHOD.
-*
-*ENDCLASS.
-*
-*
-*CLASS gcl_measures IMPLEMENTATION.
-*  METHOD constructor.
-*    super->constructor(
-*      ir_mode          = ir_mode
-*      iv_data_provider = iv_data_provider ).
-*
-*    mv_stcsm = iv_stcsm.
-*    IF mv_stcsm IS INITIAL.
-*      " Füllen Sie alle Mussfelder aus
-*      MESSAGE e055(00).
-*    ENDIF.
-*  ENDMETHOD.
-*
-*  METHOD on_file_found.
-*    DATA(lt_params) = VALUE btc_t_templ_var(
-*      ( selname = 'P_DP'    kind = gif_mode=>gc_kind-params low = mv_data_provider )
-*      ( selname = 'P_STCSM' kind = gif_mode=>gc_kind-params low = mv_stcsm )
-*      ( selname = 'P_PATH1' kind = gif_mode=>gc_kind-params low = SWITCH #( sender->is_local( ) WHEN abap_true  THEN ev_full ELSE space ) )
-*      ( selname = 'P_PATH2' kind = gif_mode=>gc_kind-params low = SWITCH #( sender->is_local( ) WHEN abap_false THEN ev_full ELSE space ) )
-*      ( selname = 'P_CNTGR' kind = gif_mode=>gc_kind-params low = abap_true )
-*      ( selname = 'P_MART'  kind = gif_mode=>gc_kind-params low = abap_true )
-*      ( selname = 'P_ZCO'   kind = gif_mode=>gc_kind-params low = abap_true )
-*      ( selname = 'P_ZCO'   kind = gif_mode=>gc_kind-params low = abap_true )
-*      ( selname = 'P_OLI'   kind = gif_mode=>gc_kind-params low = abap_false )
-*    ).
-*
-*    IF mr_mode->is_productive( ) = abap_true.
-*      " Submit the report for uploading a single mesaurement file
-*      SUBMIT /sapsll/sllns_xml_measures_upl WITH SELECTION-TABLE lt_params AND RETURN.
-*    ENDIF.
-*
-*    " Move file to archive and output log message
-*    super->on_file_found(
-*      sender  = sender
-*      ev_file = ev_file
-*      ev_path = ev_path
-*      ev_full = ev_full ).
-*
-*  ENDMETHOD.
-*ENDCLASS.
