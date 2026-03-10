@@ -1,12 +1,12 @@
-# Report for mass-update of data provider content (e.g. REGUVIS).
+# Report for Mass-Update of Data Provider Content (e.g. REGUVIS).
 
-## Core functionalities
+## Core Functionalities
   - Background functionality
   - Sequential call of SAP standard upload reports
   - REGEX/PCRE file name evaluation
   - E-Mail functionality
 
-## Manual activities
+## Manual Activities
 ### Data Dictionary Objects
 #### Table ZGTS_DP_UPLOAD
 Steuerung Datenupload Ext. Datenprovider
@@ -71,7 +71,7 @@ Steuerung Datenupload Ext. Datenprovider - Daten
     - `A` Alle
     - `N` Neueste
 
-### Report text symbols:
+### Report Text Symbols:
   - `001` Ein neuer Datenupload wurde gestartet.
   - `002` Simulationsmodus:
   - `003` Folgende Dateien wurden hochgeladen:
