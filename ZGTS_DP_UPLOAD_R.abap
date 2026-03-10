@@ -12,11 +12,17 @@ INCLUDE: zgts_dp_upload_top, " TOP-Include
          zgts_dp_upload_f01. " Local Subroutines
 
 *--------------------------------------------------------------------*
+* AT SELECTION-SCREEN ON p_dp
+*--------------------------------------------------------------------*
+AT SELECTION-SCREEN ON p_dp.
+  PERFORM get_partner_details USING p_dp
+                           CHANGING gv_dpnam.
+
+*--------------------------------------------------------------------*
 * AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_path
 *--------------------------------------------------------------------*
 AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_ldir.
-  PERFORM get_filename USING px_loc
-                    CHANGING p_ldir.
+  PERFORM get_filename CHANGING p_ldir.
 
 *--------------------------------------------------------------------*
 * AT SELECTION-SCREEN ON BLOCK b03
@@ -29,6 +35,7 @@ AT SELECTION-SCREEN ON BLOCK b02.
 *--------------------------------------------------------------------*
 INITIALIZATION.
   PERFORM get_textpool.
+  PERFORM restrict_mail.
 
 *--------------------------------------------------------------------*
 * AT SELECTION-SCREEN OUTPUT
